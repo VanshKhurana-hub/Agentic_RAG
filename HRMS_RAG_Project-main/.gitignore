@@ -5,7 +5,7 @@
 *.pem
 *.key
 *.log
-/HRMS_RAG_Project-main/data/mock_lead.txt
+/data/mock_lead.txt
 
 # =========================
 # 2. Python Backend (FastAPI / LlamaIndex)

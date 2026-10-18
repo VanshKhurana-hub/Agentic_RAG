@@ -1,44 +1,46 @@
-import os
-from llama_index.core.agent import ReActAgent
-from llama_index.llms.bedrock import Bedrock
+# query_engine.py
+from typing import TypedDict, Annotated, Sequence
+from langchain_core.messages import BaseMessage
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_aws import ChatBedrock
+
 from app.services.tools import get_hrms_tools
 
-# The system prompt is now generalized for an independent HRMS assistant
-AGENT_SYSTEM_PROMPT = """You are an intelligent HRMS AI assistant.
-You have access to tools for searching HR policy documents and checking employee database records.
+import os
+from dotenv import load_dotenv
 
-Follow these strict rules:
-1. If the user asks about general policies, rules, or guidelines, use the 'search_policy_documents' tool.
-2. If the user asks about their personal leave balance, use the 'get_employee_leave_balance' tool.
-3. If the user greets you (e.g., "hello", "hi"), respond directly without using any tools.
-4. If a tool returns no data or an error, tell the user the information is unavailable. DO NOT make up data.
-"""
+load_dotenv()
 
-def build_hrms_agent(user_role: str, employee_id: str, memory=None):
-    """
-    Constructs the ReAct Agent orchestrator using Bedrock Nova Micro.
-    Binds the user's secure context (role and ID) directly into the tool executions.
-    """
-    
-    # Initialize Amazon Bedrock Nova Micro
-    # Temperature 0.0 is critical for reliable JSON tool-calling
-    llm = Bedrock(
-        model="amazon.nova-micro-v1:0",
-        temperature=0.0,
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-    )
-    
-    # Fetch the dynamically bound tools from your new tools.py file
-    tools = get_hrms_tools(user_role=user_role, employee_id=employee_id)
-    
-    # Instantiate the ReAct Agent
-    agent = ReActAgent.from_tools(
-        tools=tools,
-        llm=llm,
-        verbose=True,           # Keep this True for local dev to watch the agent "think" in the terminal
-        system_prompt=AGENT_SYSTEM_PROMPT,
-        max_iterations=4,       # Safety guardrail to prevent infinite tool-calling loops
-        memory=memory           # Hooks into Upstash Redis via chat_services.py
-    )
-    
-    return agent
+# 1. Define the Agent State
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], lambda a, b: a + b]
+
+# 2. Setup Bedrock LLM via LangChain
+llm = ChatBedrock(
+    model_id="amazon.nova-micro-v1:0",
+    region_name="us-east-1",
+    model_kwargs={"temperature": 0.0}
+)
+
+# 3. Load tools dynamically from your service registry
+tools = get_hrms_tools()
+llm_with_tools = llm.bind_tools(tools)
+
+# 4. Define the Node Logic
+def call_model(state: AgentState):
+    messages = state["messages"]
+    response = llm_with_tools.invoke(messages)
+    return {"messages": [response]}
+
+# 5. Setup the Graph Workflow
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", ToolNode(tools))
+
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges("agent", tools_condition)
+workflow.add_edge("tools", "agent")
+
+# Compile the graph application
+app_graph = workflow.compile()

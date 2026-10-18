@@ -1,13 +1,12 @@
-import React from 'react'
-import './index.css';
-import ChatInterface from './components/ChatInterface'
+import React from 'react';
+import SimpleChat from './components/SimpleChat';
 
 function App() {
   return (
-    <div className="w-full h-screen">
-      <ChatInterface />
+    <div className="App">
+      <SimpleChat />
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

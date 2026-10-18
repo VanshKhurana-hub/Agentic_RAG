@@ -28,6 +28,7 @@ yarn-error.log*
 # 4. Local Database Storage
 # =========================
 qdrant_storage/
+qdrant_local_db/
 *.sqlite3
 *.db
 

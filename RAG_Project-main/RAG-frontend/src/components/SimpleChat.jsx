@@ -1,296 +1,152 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, Loader2, Menu, X, UploadCloud, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Send, Plus, MessageSquare, User, Zap, Bot, Loader2, 
+  UploadCloud, FileText, Database, ShieldCheck, CheckSquare, Square,
+  RefreshCw, FolderOpen, Play, Sparkles, CheckCircle2, AlertCircle, 
+  CornerDownLeft, Search, X
+} from 'lucide-react';
 
-export default function SimpleChat() {
-  // Chat State
-  const [messages, setMessages] = useState([
-    { role: 'assistant', text: 'Hello! I am your AI HRMS Assistant. How can I help you today?' }
-  ]);
-  const [inputText, setInputText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef(null);
+// ============================================================================
+// HELPER: CONVERT UTC TIMESTAMPS TO INDIAN STANDARD TIME (IST - UTC+5:30)
+// ============================================================================
+const formatToIST = (dateString) => {
+  if (!dateString) return '-';
 
-  // Upload Panel State
-  const [isPanelOpen, setIsPanelOpen] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [uploadCategory, setUploadCategory] = useState('General');
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState(null); 
-  const fileInputRef = useRef(null);
+  const utcString = dateString.endsWith('Z') ? dateString : `${dateString}Z`;
+  const dateObj = new Date(utcString);
 
-  // Auto-scroll to the bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  if (isNaN(dateObj.getTime())) return dateString;
 
-  // Fetch mock JWT token for local development
-  useEffect(() => {
-    const fetchTestToken = async () => {
-      try {
-        const response = await fetch('http://localhost:5030/api/test-token?username=bob_dev');
-        if (response.ok) {
-          const data = await response.json();
-          localStorage.setItem('jwt_token', data.token ? data.token : data);
-        }
-      } catch (error) {
-        console.error("Could not fetch test token.", error);
-      }
-    };
-    if (!localStorage.getItem('jwt_token')) fetchTestToken();
-  }, []);
+  return dateObj.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  });
+};
 
-  // --- Chat Logic ---
-  const handleSendMessage = async (e) => {
-    e?.preventDefault();
-    if (!inputText.trim() || isLoading) return;
-
-    const userText = inputText.trim();
-    setMessages((prev) => [...prev, { role: 'user', text: userText }]);
-    setInputText('');
-    setIsLoading(true);
-
-    try {
-      const token = localStorage.getItem('jwt_token') || 'mock_token';
-      const sessionId = 'default_session';
-
-      const response = await fetch('http://127.0.0.1:8000/api/chat', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'X-Session-ID': sessionId
-        },
-        body: JSON.stringify({
-          message: userText,
-          active_documents: [], 
-          session_id: sessionId
-        }),
-      });
-
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-      const data = await response.json();
-
-      let responseText = data.reply || data.answer || "No response received.";
-      if (typeof responseText === 'object' && responseText !== null) {
-        responseText = responseText.reply || responseText.text || JSON.stringify(responseText);
-      }
-
-      setMessages((prev) => [...prev, { role: 'assistant', text: responseText }]);
-
-    } catch (error) {
-      setMessages((prev) => [...prev, { 
-        role: 'assistant', 
-        text: `⚠️ Connection Error: ${error.message}. Make sure your FastAPI backend is running.` 
-      }]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // --- Document Upload Logic ---
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setSelectedFile(file);
-      setUploadStatus(null);
-    }
-  };
-
-  const handleFileUpload = async () => {
-    if (!selectedFile) return;
-
-    setIsUploading(true);
-    setUploadStatus(null);
-
-    try {
-      const token = localStorage.getItem('jwt_token') || 'mock_token';
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      formData.append('category', uploadCategory);
-
-      const response = await fetch('http://127.0.0.1:8000/api/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error(`Upload failed (${response.status})`);
-      
-      const data = await response.json();
-      setUploadStatus({ 
-        type: 'success', 
-        text: `Successfully uploaded ${selectedFile.name}!` 
-      });
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-
-      setMessages(prev => [...prev, {
-        role: 'system',
-        text: `System: Document "${data.filename}" uploaded to ${data.category}.`
-      }]);
-
-    } catch (error) {
-      setUploadStatus({ type: 'error', text: `Error: ${error.message}` });
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
+// ============================================================================
+// SUB-COMPONENT 1: CHAT WINDOW
+// ============================================================================
+function ChatWindow({
+  isChatStarted,
+  startNewChatSession,
+  chatHistory,
+  isLoading,
+  isUploading,
+  message,
+  setMessage,
+  handleSendMessage,
+  sessionId,
+  messagesEndRef,
+  activeDocCount
+}) {
   return (
-    <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
-      
-      {/* Side Document Upload Panel (MOVED TO LEFT) */}
-      <aside 
-        className={`bg-white border-r border-slate-200 shadow-xl transition-all duration-300 ease-in-out shrink-0 overflow-y-auto ${
-          isPanelOpen ? 'w-80 opacity-100 translate-x-0' : 'w-0 opacity-0 -translate-x-full border-none'
-        }`}
-      >
-        <div className="p-6 w-80">
-          <div className="flex items-center gap-2 mb-6 text-slate-800">
-            <FileText className="text-indigo-600" size={20} />
-            <h2 className="font-bold text-lg">Document Upload</h2>
+    <div className="flex flex-col h-full bg-slate-50/70 relative z-0">
+      {/* Header */}
+      <header className="h-16 border-b border-slate-200/80 flex items-center justify-between px-8 bg-white/80 backdrop-blur-md shadow-xs shrink-0">
+        <div className="flex items-center gap-3.5">
+          <div className="bg-linear-to-br from-indigo-600 to-blue-600 p-2.5 rounded-xl shadow-md shadow-indigo-500/20 flex items-center justify-center">
+            <Bot className="text-white w-5 h-5" />
           </div>
-
-          <div className="space-y-5">
-            {/* Category Selector */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-                Knowledge Base Category
-              </label>
-              <select
-                value={uploadCategory}
-                onChange={(e) => setUploadCategory(e.target.value)}
-                disabled={isUploading}
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-700 focus:border-indigo-500 outline-none"
-              >
-                <option value="General">General / Miscellaneous</option>
-                <option value="HR_Policy">HR Policy</option>
-                <option value="Leave_Policy">Leave & Time Off</option>
-                <option value="Onboarding">Onboarding Manual</option>
-              </select>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-slate-900 text-lg tracking-tight">AI HRMS Assistant</h1>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+                Agentic RAG
+              </span>
             </div>
-
-            {/* File Dropzone / Selector */}
-            <div>
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleFileChange} 
-                className="hidden" 
-                accept=".pdf,.doc,.docx,.txt"
-              />
-              <div 
-                onClick={() => !isUploading && fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center transition-colors cursor-pointer ${
-                  selectedFile 
-                    ? 'border-indigo-500 bg-indigo-50' 
-                    : 'border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-slate-100'
-                } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <UploadCloud size={28} className={selectedFile ? 'text-indigo-600 mb-2' : 'text-slate-400 mb-2'} />
-                {selectedFile ? (
-                  <p className="text-sm font-semibold text-indigo-700 break-all">{selectedFile.name}</p>
-                ) : (
-                  <>
-                    <p className="text-sm font-semibold text-slate-700">Click to select file</p>
-                    <p className="text-xs text-slate-500 mt-1">PDF, DOCX, TXT</p>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Upload Button */}
-            <button
-              onClick={handleFileUpload}
-              disabled={!selectedFile || isUploading}
-              className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-all ${
-                selectedFile && !isUploading
-                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              {isUploading ? (
-                <><Loader2 size={18} className="animate-spin" /> Indexing...</>
-              ) : (
-                <>Upload Document</>
-              )}
-            </button>
-
-            {/* Status Messages */}
-            {uploadStatus && (
-              <div className={`p-3 rounded-lg text-sm flex items-start gap-2 ${
-                uploadStatus.type === 'success' 
-                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                  : 'bg-rose-50 text-rose-700 border border-rose-200'
-              }`}>
-                {uploadStatus.type === 'success' ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <AlertCircle size={16} className="mt-0.5 shrink-0" />}
-                <span>{uploadStatus.text}</span>
-              </div>
-            )}
+            <p className="text-xs text-slate-500 font-medium flex items-center gap-1.5 mt-0.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              {activeDocCount} Active Document{activeDocCount !== 1 ? 's' : ''} Grounded
+            </p>
           </div>
         </div>
-      </aside>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col relative transition-all duration-300">
-        
-        {/* Header */}
-        <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 shadow-sm shrink-0">
-          
-          <div className="flex items-center gap-4">
-            {/* Toggle Panel Button (MOVED TO LEFT SIDE) */}
-            <button 
-              onClick={() => setIsPanelOpen(!isPanelOpen)}
-              className={`p-2.5 rounded-xl transition-all ${isPanelOpen ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
-              title="Upload Document"
-            >
-              {isPanelOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
+        {isChatStarted && (
+          <button
+            onClick={startNewChatSession}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100/80 rounded-xl transition-all border border-indigo-200/60 shadow-xs cursor-pointer active:scale-95"
+          >
+            <Plus size={14} />
+            New Session
+          </button>
+        )}
+      </header>
 
-            <div className="flex items-center gap-3">
-              <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-md">
-                <Bot size={24} />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-slate-900 leading-tight">HRMS Agent</h1>
-                <p className="text-xs font-medium text-slate-500">Connected to LangGraph Backend</p>
-              </div>
+      {/* Welcome Screen vs Conversation Feed */}
+      {!isChatStarted ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-300">
+          <div className="max-w-md bg-white p-8 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-200/80 relative overflow-hidden">
+            <div className="absolute -top-12 -right-12 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl"></div>
+            <div className="w-16 h-16 bg-linear-to-tr from-indigo-500 to-blue-600 text-white rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-indigo-500/25">
+              <Sparkles size={32} />
             </div>
+            <h2 className="text-2xl font-bold text-slate-900 mb-2.5 tracking-tight">Welcome to HR Assistant</h2>
+            <p className="text-sm text-slate-500 mb-8 leading-relaxed">
+              Your HR assistant is ready. Query company policies, leave guidelines, or onboarding manuals securely grounded in your knowledge base.
+            </p>
+            <button
+              onClick={startNewChatSession}
+              className="w-full py-3.5 px-6 bg-linear-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 text-sm cursor-pointer active:scale-95"
+            >
+              <Play size={16} className="fill-white" />
+              Start Chat Session
+            </button>
           </div>
-
-        </header>
-
-        {/* Chat Messages Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-          <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map((msg, index) => (
-              <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : msg.role === 'system' ? 'justify-center' : 'justify-start'}`}>
-                
-                {msg.role === 'system' ? (
-                   <div className="text-xs font-medium text-slate-500 bg-slate-200/50 px-4 py-1.5 rounded-full">
-                     {msg.text}
-                   </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto p-8 space-y-6 scroll-smooth select-text">
+            {chatHistory.map((chat, index) => (
+              <div key={index} className={`flex ${chat.role === 'user' ? 'justify-end' : chat.role === 'system' ? 'justify-center' : 'justify-start'}`}>
+                {chat.role === 'system' ? (
+                  <div className="text-xs font-medium text-slate-600 bg-slate-200/70 px-4 py-1.5 rounded-full shadow-xs border border-slate-300/60">
+                    {chat.text}
+                  </div>
                 ) : (
-                  <div className="flex items-end gap-3 max-w-[85%]">
-                    {msg.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 mb-1">
-                        <Bot size={18} />
+                  <div className="flex items-start gap-3 max-w-[85%] xl:max-w-3xl">
+                    {chat.role === 'assistant' && (
+                      <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                        <Bot size={16} />
                       </div>
                     )}
 
-                    <div className={`px-5 py-3.5 rounded-2xl shadow-sm text-sm sm:text-base leading-relaxed whitespace-pre-wrap ${
-                      msg.role === 'user' 
-                        ? 'bg-indigo-600 text-white rounded-br-sm' 
-                        : 'bg-white text-slate-800 border border-slate-200 rounded-bl-sm'
+                    <div className={`px-5 py-3.5 rounded-2xl shadow-sm ${
+                      chat.role === 'user' 
+                        ? 'bg-indigo-600 text-white rounded-br-xs shadow-indigo-500/15' 
+                        : 'bg-white text-slate-800 rounded-bl-xs border border-slate-200/80 shadow-slate-200/40'
                     }`}>
-                      {msg.text}
+                      {chat.cached && (
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 mb-2 bg-amber-50 border border-amber-200/80 w-fit px-2.5 py-0.5 rounded-full shadow-2xs">
+                          <Zap className="w-3.5 h-3.5 fill-amber-500 text-amber-500" /> Cached Response
+                        </div>
+                      )}
+                      
+                      <div className="whitespace-pre-wrap leading-relaxed text-[14.5px]">{chat.text}</div>
+
+                      {chat.sources && chat.sources.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                            Sources:
+                          </span>
+                          {chat.sources.map((fileName, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-md border border-indigo-200/60 font-mono"
+                            >
+                              📄 {fileName}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
-                    {msg.role === 'user' && (
-                      <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center shrink-0 mb-1">
-                        <User size={18} />
+                    {chat.role === 'user' && (
+                      <div className="w-8 h-8 rounded-xl bg-slate-800 text-white flex items-center justify-center shrink-0 shadow-sm mt-0.5">
+                        <User size={16} />
                       </div>
                     )}
                   </div>
@@ -298,59 +154,738 @@ export default function SimpleChat() {
               </div>
             ))}
 
-            {/* Loading Indicator */}
             {isLoading && (
-              <div className="flex justify-start">
-                <div className="flex items-end gap-3">
-                  <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 mb-1">
-                    <Bot size={18} />
-                  </div>
-                  <div className="bg-white border border-slate-200 px-5 py-4 rounded-2xl rounded-bl-sm shadow-sm flex items-center gap-2">
-                    <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }}></div>
-                    <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }}></div>
-                  </div>
+              <div className="flex justify-start items-start gap-3">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Bot size={16} />
+                </div>
+                <div className="bg-white border border-slate-200/80 shadow-sm rounded-2xl rounded-bl-xs px-5 py-4 flex items-center gap-2">
+                  <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '0.15s' }}></div>
+                  <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '0.3s' }}></div>
                 </div>
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
-        </main>
 
-        {/* Input Area */}
-        <footer className="bg-white border-t border-slate-200 p-4 shrink-0">
-          <form onSubmit={handleSendMessage} className="max-w-3xl mx-auto flex items-end gap-3">
-            <div className="flex-1 bg-slate-100 rounded-2xl p-2 border border-slate-200 focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all flex items-center">
+          {/* Input Bar */}
+          <div className="p-6 bg-white/80 backdrop-blur-md border-t border-slate-200/80 shrink-0">
+            <div className="max-w-4xl mx-auto flex items-end gap-2.5 bg-slate-100/80 rounded-2xl p-2 shadow-inner border border-slate-200/80 focus-within:border-indigo-500 focus-within:bg-white focus-within:ring-3 focus-within:ring-indigo-500/10 transition-all">
               <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Ask a question about HR policies..."
+                className="flex-1 bg-transparent resize-none max-h-32 min-h-10 outline-none py-2 px-3 text-slate-800 placeholder-slate-400 text-sm select-text"
+                rows={1}
+                disabled={isLoading || isUploading}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSendMessage();
                   }
                 }}
-                placeholder="Message the HR Assistant..."
-                className="w-full bg-transparent resize-none max-h-32 min-h-10 py-2 px-3 outline-none text-slate-800 placeholder-slate-400 text-base"
-                rows={1}
-                disabled={isLoading}
               />
+              <button 
+                onClick={handleSendMessage}
+                disabled={!message.trim() || isLoading || isUploading}
+                className={`p-2.5 rounded-xl shrink-0 transition-all duration-200 shadow-xs cursor-pointer ${
+                  message.trim()
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-indigo-500/25 active:scale-95' 
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                <Send size={18} />
+              </button>
             </div>
+            <div className="max-w-4xl mx-auto flex items-center justify-between px-2 mt-2 text-[11px] text-slate-400">
+              <span className="flex items-center gap-1">
+                <CornerDownLeft size={10} /> Enter to send, Shift + Enter for new line
+              </span>
+              <span>Active Session: <strong className="text-slate-600 font-mono">{sessionId}</strong></span>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SUB-COMPONENT 2: DOCUMENT MANAGER (Knowledge Base & Status Toggles)
+// ============================================================================
+function DocumentManager({
+  selectedCategory,
+  setSelectedCategory,
+  isUploading,
+  isLoading,
+  fileInputRef,
+  handleFileChange,
+  documentHistory,
+  toggleDocumentSelection,
+  isFetchingDocs,
+  fetchDocuments,
+  gridSearch,
+  setGridSearch,
+  gridSort,
+  setGridSort,
+  filteredDocHistory
+}) {
+  return (
+    <div className="flex flex-col h-full bg-slate-50/70 overflow-y-auto p-8 select-text">
+      <div className="max-w-6xl mx-auto w-full space-y-8 animate-in fade-in duration-200">
+        
+        {/* Title Section */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+              <Database className="text-indigo-600 w-6 h-6" />
+              Document Control Panel
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Upload files and toggle checkboxes to activate/deactivate documents for AI search context.
+            </p>
+          </div>
+
+          <button
+            onClick={fetchDocuments}
+            disabled={isFetchingDocs}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all border border-slate-200 shrink-0 cursor-pointer"
+          >
+            <RefreshCw size={14} className={isFetchingDocs ? "animate-spin text-indigo-600" : ""} />
+            Refresh Documents
+          </button>
+        </div>
+
+        {/* Upload Section & Active Filtering Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* Left Column: Upload Box */}
+          <div className="lg:col-span-5 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-4">
+                Upload New Document
+              </h3>
+
+              <div className="mb-4">
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
+                  Category Tag
+                </label>
+                <select 
+                  value={selectedCategory} 
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  disabled={isUploading || isLoading}
+                  className="w-full bg-slate-50 border border-slate-300 text-slate-800 rounded-xl px-3.5 py-2.5 text-xs focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 outline-none transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <option value="General">General / Miscellaneous</option>
+                  <option value="HR_Policy">HR Policy</option>
+                  <option value="Code_of_Conduct">Code of Conduct</option>
+                  <option value="Leave_Policy">Leave & Time Off</option>
+                  <option value="Onboarding">Onboarding Manual</option>
+                </select>
+              </div>
+
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileChange} 
+                className="hidden" 
+                accept=".pdf,.doc,.docx,.txt"
+              />
+
+              <div 
+                onClick={() => !isUploading && !isLoading && fileInputRef.current.click()}
+                className={`relative group rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all duration-300 overflow-hidden border-2 border-dashed ${
+                  isUploading || isLoading 
+                    ? 'bg-slate-50 border-slate-300 cursor-wait opacity-80' 
+                    : 'bg-indigo-50/40 border-indigo-300 hover:bg-indigo-50 hover:border-indigo-500 cursor-pointer'
+                }`}
+              >
+                <div className="relative z-10">
+                  {isUploading ? (
+                    <>
+                      <Loader2 size={32} className="animate-spin text-indigo-600 mx-auto mb-2" />
+                      <p className="text-xs font-semibold text-indigo-700">Uploading & Indexing...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-3 group-hover:scale-105 transition-transform">
+                        <UploadCloud size={24} className="text-indigo-600" />
+                      </div>
+                      <p className="text-sm font-bold text-slate-800 mb-1">Upload to {selectedCategory}</p>
+                      <p className="text-xs text-slate-500">Supports PDF, DOCX, TXT (Auto SHA-256 Hash)</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Checkbox Active Filter Toggle */}
+          <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">
+                  Active Knowledge Base Filter
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Checked documents are enabled for RAG context retrieval.
+                </p>
+              </div>
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/60">
+                {documentHistory.filter(d => d.isSelected).length} Active
+              </span>
+            </div>
+
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1 flex-1">
+              {documentHistory.length === 0 ? (
+                <div className="h-40 flex flex-col items-center justify-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-xl">
+                  <FolderOpen size={24} className="mb-2 text-slate-300" />
+                  No documents found in database.
+                </div>
+              ) : (
+                documentHistory.map((doc) => (
+                  <div 
+                    key={doc.hash} 
+                    onClick={() => toggleDocumentSelection(doc.hash)}
+                    className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
+                      doc.isSelected 
+                        ? 'bg-indigo-50/60 border-indigo-300 text-slate-900 shadow-2xs' 
+                        : 'bg-slate-50/60 border-slate-200/80 opacity-60 text-slate-500 hover:opacity-90'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {doc.isSelected ? (
+                        <CheckSquare className="text-indigo-600 w-5 h-5 shrink-0" />
+                      ) : (
+                        <Square className="text-slate-400 w-5 h-5 shrink-0" />
+                      )}
+                      <div className="truncate">
+                        <span className="text-xs font-semibold block truncate">
+                          {doc.filename}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono block truncate">
+                          Hash: {doc.hash.substring(0, 12)}...
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[11px] bg-white px-2 py-0.5 rounded-md border border-slate-200 text-slate-600 font-mono shrink-0">
+                      {doc.category}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Document Upload History Table */}
+        <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2">
+              <FolderOpen size={16} className="text-indigo-600" />
+              Document Upload History
+            </h3>
+
+            {/* Search & Sort Toolbar */}
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="relative flex-1 sm:w-64">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={gridSearch}
+                  onChange={(e) => setGridSearch(e.target.value)}
+                  placeholder="Search file, category..."
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs focus:border-indigo-500 outline-none"
+                />
+              </div>
+              <select
+                value={gridSort}
+                onChange={(e) => setGridSort(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-3 py-1.5 text-xs focus:border-indigo-500 outline-none cursor-pointer"
+              >
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="name_asc">Name (A-Z)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="border border-slate-200/80 rounded-xl overflow-hidden">
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="py-3 px-4 font-semibold w-16">ID</th>
+                  <th className="py-3 px-4 font-semibold w-32">Uploaded By</th>
+                  <th className="py-3 px-4 font-semibold">File Name</th>
+                  <th className="py-3 px-4 font-semibold w-36">Category</th>
+                  <th className="py-3 px-4 font-semibold w-24">Status</th>
+                  <th className="py-3 px-4 font-semibold w-40 text-right">Upload Date (IST)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {filteredDocHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan="6" className="py-8 text-center text-slate-400">
+                      No matching documents found.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredDocHistory.map((doc, idx) => (
+                    <tr key={doc.hash || idx} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3 px-4 text-slate-400 font-mono text-[11px]">#{doc.id || idx + 1}</td>
+                      <td className="py-3 px-4 font-medium text-slate-700">{doc.uploaded_by || "HR_Admin"}</td>
+                      <td className="py-3 px-4 font-semibold text-slate-900 truncate max-w-xs" title={doc.filename}>{doc.filename}</td>
+                      <td className="py-3 px-4">
+                        <span className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                          {doc.category}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                          doc.isSelected ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500 border border-slate-200'
+                        }`}>
+                          {doc.isSelected ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-slate-500 text-right font-mono text-[11px] whitespace-nowrap">
+                        {doc.uploaded_at ? formatToIST(doc.uploaded_at) : 'Today'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// MAIN COMPONENT: AI CHAT INTERFACE
+// ============================================================================
+export default function ChatInterface() {
+  const [activeTab, setActiveTab] = useState('chat');
+  const [message, setMessage] = useState('');
+  const [isChatStarted, setIsChatStarted] = useState(false);
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ show: true, message: msg, type });
+  };
+
+  const [gridSearch, setGridSearch] = useState('');
+  const [gridSort, setGridSort] = useState('newest');
+
+  const [chatHistory, setChatHistory] = useState(() => {
+    const savedChat = localStorage.getItem('hrms_chat_history');
+    return savedChat ? JSON.parse(savedChat) : [
+      { role: 'assistant', text: 'Hello! I am your HRMS assistant. Ask me a question or upload a document to the knowledge base on the left tab.', sources: [] }
+    ];
+  });
+
+  const [documentHistory, setDocumentHistory] = useState([]);
+  const [isFetchingDocs, setIsFetchingDocs] = useState(false);
+  const [sessionId, setSessionId] = useState('default_session');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('General');
+  
+  const fileInputRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    if (isChatStarted && activeTab === 'chat') {
+      scrollToBottom();
+    }
+  }, [chatHistory, isLoading, isUploading, isChatStarted, activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem('hrms_chat_history', JSON.stringify(chatHistory));
+  }, [chatHistory]);
+
+  useEffect(() => {
+    if (toast.show) {
+      const timer = setTimeout(() => {
+        setToast((prev) => ({ ...prev, show: false }));
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast.show]);
+
+  // Initial load
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
+
+  const startNewChatSession = () => {
+    const freshSessionId = `session_${Date.now()}`;
+    setSessionId(freshSessionId);
+    setChatHistory([
+      { role: 'assistant', text: 'Hello! I am your HRMS assistant. Ask me a question or manage documents in the Document Control Panel.', sources: [] }
+    ]);
+    setIsChatStarted(true);
+    setActiveTab('chat');
+  };
+
+  // ---------------------------------------------------------
+  // Fetch Documents from PostgreSQL
+  // ---------------------------------------------------------
+  const fetchDocuments = async () => {
+    setIsFetchingDocs(true);
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/documents');
+      if (response.ok) {
+        const data = await response.json();
+        setDocumentHistory(data.map(doc => ({
+          id: doc.id,
+          hash: doc.hash,
+          filename: doc.name,
+          category: doc.category,
+          uploaded_by: doc.uploaded_by || "HR_Admin",
+          uploaded_at: doc.uploaded_at,
+          isSelected: doc.is_active !== undefined ? doc.is_active : true
+        })));
+      }
+    } catch (error) {
+      console.error("Failed to load document history from backend:", error);
+    } finally {
+      setIsFetchingDocs(false);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // Toggle Active Status in PostgreSQL & Qdrant
+  // ---------------------------------------------------------
+  const toggleDocumentSelection = async (fileHash) => {
+    const targetDoc = documentHistory.find(doc => doc.hash === fileHash);
+    if (!targetDoc) return;
+
+    const newStatus = !targetDoc.isSelected;
+
+    // Optimistic UI update
+    setDocumentHistory(prevDocs => 
+      prevDocs.map(doc => 
+        doc.hash === fileHash ? { ...doc, isSelected: newStatus } : doc
+      )
+    );
+
+    showToast(
+      `Document "${targetDoc.filename}" is now ${newStatus ? 'ACTIVE' : 'INACTIVE'}`,
+      newStatus ? 'success' : 'warning'
+    );
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/documents/${fileHash}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: newStatus })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update status on server');
+      }
+    } catch (error) {
+      console.error("⚠️ Server status update failed, reverting UI:", error);
+      showToast(`Could not update status for "${targetDoc.filename}"`, 'error');
+
+      // Revert state
+      setDocumentHistory(prevDocs => 
+        prevDocs.map(doc => 
+          doc.hash === fileHash ? { ...doc, isSelected: !newStatus } : doc
+        )
+      );
+    }
+  };
+
+  // ---------------------------------------------------------
+  // FILE UPLOAD LOGIC
+  // ---------------------------------------------------------
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const tempUploadId = Date.now();
+    setChatHistory(prev => [...prev, { 
+      id: tempUploadId,
+      role: 'system', 
+      text: `Uploading and indexing '${file.name}' under category '${selectedCategory}'...` 
+    }]);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', selectedCategory); 
+
+      const response = await fetch('http://127.0.0.1:8000/api/upload', {
+        method: 'POST',
+        body: formData, 
+      });
+
+      if (response.status === 409) {
+        const errData = await response.json();
+        showToast(errData.detail || `"${file.name}" is already uploaded.`, 'warning');
+        setChatHistory(prev => prev.map(msg => 
+          msg.id === tempUploadId 
+            ? { ...msg, text: `⚠️ ${errData.detail || `'${file.name}' is already uploaded.`}` } 
+            : msg
+        ));
+        return;
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      showToast(`Successfully uploaded "${file.name}" (${data.chunks_added} chunks indexed).`, 'success');
+
+      setChatHistory(prev => prev.map(msg => 
+        msg.id === tempUploadId 
+          ? { ...msg, text: `✅ Successfully uploaded '${file.name}'! (${data.chunks_added} chunks added).` } 
+          : msg
+      ));
+
+      await fetchDocuments();
+
+    } catch (error) {
+      showToast(error.message || `Failed to upload "${file.name}".`, 'error');
+      setChatHistory(prev => prev.map(msg => 
+        msg.id === tempUploadId 
+          ? { ...msg, text: `❌ Failed to upload '${file.name}'. Make sure the server is running.` } 
+          : msg
+      ));
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // ---------------------------------------------------------
+  // CHAT LOGIC
+  // ---------------------------------------------------------
+  const handleSendMessage = async () => {
+    if (!message.trim()) return;
+
+    const userText = message.trim();
+    
+    setChatHistory(prev => [...prev, { role: 'user', text: userText }]);
+    setMessage('');
+    setIsLoading(true);
+
+    try {
+      const activeDocHashes = documentHistory
+        .filter(doc => doc.isSelected)
+        .map(doc => doc.hash);
+
+      const payload = {
+        message: userText,
+        active_documents: activeDocHashes,
+        session_id: sessionId
+      };
+
+      const response = await fetch('http://127.0.0.1:8000/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': sessionId
+        },
+        body: JSON.stringify(payload), 
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+      const data = await response.json();
+      
+      setChatHistory(prev => [...prev, { 
+        role: 'assistant', 
+        text: data.reply || "No response generated.",
+        sources: data.sources || []
+      }]);
+
+    } catch (error) {
+      setChatHistory(prev => [...prev, { 
+        role: 'assistant', 
+        text: `⚠️ Error: ${error.message}` 
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Filter & sort logic for table
+  const filteredDocHistory = documentHistory
+    .filter((doc) => {
+      const searchLower = gridSearch.toLowerCase();
+      const idMatch = String(doc.id || '').toLowerCase().includes(searchLower);
+      const nameMatch = (doc.filename || '').toLowerCase().includes(searchLower);
+      const userMatch = (doc.uploaded_by || '').toLowerCase().includes(searchLower);
+      const catMatch = (doc.category || '').toLowerCase().includes(searchLower);
+      return idMatch || nameMatch || userMatch || catMatch;
+    })
+    .sort((a, b) => {
+      if (gridSort === 'oldest') {
+        return new Date(a.uploaded_at || 0) - new Date(b.uploaded_at || 0);
+      }
+      if (gridSort === 'name_asc') {
+        return (a.filename || '').localeCompare(b.filename || '');
+      }
+      return new Date(b.uploaded_at || 0) - new Date(a.uploaded_at || 0);
+    });
+
+  const handleTabSwitch = (tabName) => {
+    setActiveTab(tabName);
+    setGridSearch('');
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden font-sans bg-slate-100 select-none text-slate-800">
+      
+      {/* Toast Popup */}
+      {toast.show && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-2xl px-5 py-3.5 shadow-xl transition-all duration-300 border backdrop-blur-md animate-in fade-in slide-in-from-bottom-4 ${
+            toast.type === 'success'
+              ? 'bg-slate-900/95 border-emerald-500/30 text-white shadow-emerald-950/20'
+              : toast.type === 'warning'
+              ? 'bg-slate-900/95 border-amber-500/30 text-white shadow-amber-950/20'
+              : 'bg-slate-900/95 border-rose-500/30 text-white shadow-rose-950/20'
+          }`}
+        >
+          {toast.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+          )}
+          <span className="text-sm font-medium tracking-wide">{toast.message}</span>
+          <button
+            onClick={() => setToast({ show: false, message: '', type: 'success' })}
+            className="text-xs opacity-60 hover:opacity-100 ml-2 font-bold cursor-pointer transition-opacity"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Sidebar Navigation */}
+      <aside className="w-64 bg-slate-900 text-white flex flex-col h-full shrink-0 border-r border-slate-800/80 justify-between z-20">
+        <div>
+          <div className="h-16 px-6 border-b border-slate-800/80 flex items-center gap-3">
+            <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-md shadow-indigo-500/25">
+              <Bot size={20} />
+            </div>
+            <div>
+              <h2 className="font-bold text-slate-100 text-base tracking-tight leading-none">
+                AI HR Assistant
+              </h2>
+              <span className="text-[10px] uppercase tracking-wider text-indigo-400 font-mono">
+                Agentic RAG
+              </span>
+            </div>
+          </div>
+
+          <nav className="p-4 space-y-1.5">
             <button
-              type="submit"
-              disabled={!inputText.trim() || isLoading}
-              className={`p-3.5 rounded-xl shrink-0 transition-all ${
-                inputText.trim() && !isLoading
-                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:scale-95'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+              onClick={() => handleTabSwitch('chat')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'chat'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
               }`}
             >
-              {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+              <MessageSquare size={18} />
+              Chat Window
             </button>
-          </form>
-        </footer>
-      </div>
 
+            <button
+              onClick={() => handleTabSwitch('documents')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'documents'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <FolderOpen size={18} />
+              Document Control
+            </button>
+          </nav>
+        </div>
+
+        <div className="p-4 border-t border-slate-800/80 bg-slate-950/40">
+          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">
+            System Pipeline
+          </h3>
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400 flex items-center gap-2">
+                <ShieldCheck size={14} className="text-emerald-400" />
+                Qdrant DB
+              </span>
+              <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                Connected
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400 flex items-center gap-2">
+                <FileText size={14} className="text-indigo-400" />
+                FastAPI Port
+              </span>
+              <span className="text-[10px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded-full">
+                8000
+              </span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Viewport */}
+      <main className="flex-1 flex flex-col h-full bg-slate-100 overflow-hidden relative">
+        {activeTab === 'chat' && (
+          <ChatWindow
+            isChatStarted={isChatStarted}
+            startNewChatSession={startNewChatSession}
+            chatHistory={chatHistory}
+            isLoading={isLoading}
+            isUploading={isUploading}
+            message={message}
+            setMessage={setMessage}
+            handleSendMessage={handleSendMessage}
+            sessionId={sessionId}
+            messagesEndRef={messagesEndRef}
+            activeDocCount={documentHistory.filter(d => d.isSelected).length}
+          />
+        )}
+
+        {activeTab === 'documents' && (
+          <DocumentManager
+            selectedCategory={selectedCategory}
+            setSelectedCategory={setSelectedCategory}
+            isUploading={isUploading}
+            isLoading={isLoading}
+            fileInputRef={fileInputRef}
+            handleFileChange={handleFileChange}
+            documentHistory={documentHistory}
+            toggleDocumentSelection={toggleDocumentSelection}
+            isFetchingDocs={isFetchingDocs}
+            fetchDocuments={fetchDocuments}
+            gridSearch={gridSearch}
+            setGridSearch={setGridSearch}
+            gridSort={gridSort}
+            setGridSort={setGridSort}
+            filteredDocHistory={filteredDocHistory}
+          />
+        )}
+      </main>
     </div>
   );
 }

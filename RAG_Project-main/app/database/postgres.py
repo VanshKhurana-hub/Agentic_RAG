@@ -1,53 +1,36 @@
+# app/database/postgres.py
 import os
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, declarative_base
+import psycopg2
+from psycopg_pool import ConnectionPool
 
-# Load PostgreSQL connection URL from environment variables or default local config
-DATABASE_URL = os.getenv(
+DB_URI = os.getenv(
     "DATABASE_URL", 
-    "postgresql://postgres:khurana2222@localhost:5432/hrms_db"
+    "postgresql://postgres:password@localhost:5432/AGEtic_RAG"
 )
 
-# Initialize SQLAlchemy Engine and Session factory
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Shared connection pool for light operations
+def get_db_connection():
+    return psycopg2.connect(DB_URI)
 
-Base = declarative_base()
-
-def get_db():
-    """FastAPI dependency to yield a database session per request."""
-    db = SessionLocal()
+def init_db():
+    """Initializes schema and required PostgreSQL tables."""
     try:
-        yield db
-    finally:
-        db.close()
-
-
-def fetch_employee_leave_data(employee_id: str):
-    """
-    Queries the PostgreSQL database for an employee's live leave balances.
-    Used by the agent tool in services/tools.py.
-    """
-    try:
-        with engine.connect() as connection:
-            # Parameterized query to prevent SQL injection
-            query = text(
-                """
-                SELECT casual_leave, sick_leave, earned_leave 
-                FROM employee_leaves 
-                WHERE emp_id = :emp_id
-                """
-            )
-            result = connection.execute(query, {"emp_id": employee_id}).fetchone()
-            
-            if not result:
-                return None
-                
-            return {
-                "casual": result[0],
-                "sick": result[1],
-                "earned": result[2]
-            }
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                file_hash VARCHAR(64) UNIQUE NOT NULL,
+                filename VARCHAR(255) NOT NULL,
+                category VARCHAR(100) DEFAULT 'General',
+                uploaded_by VARCHAR(100) DEFAULT 'HR_Admin',
+                uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Database schema initialized successfully.")
     except Exception as e:
-        print(f"PostgreSQL Query Error: {str(e)}")
-        return None
+        print(f"⚠️ PostgreSQL initialization error: {e}")

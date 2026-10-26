@@ -9,7 +9,7 @@ import uuid
 from fastapi import FastAPI, Depends, Request, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 
 # --- APPLICATION SERVICES & DB UTILS ---
 from app.services.chat_services import process_chat_message
@@ -38,6 +38,10 @@ init_db()
 class ChatPayload(BaseModel):
     message: str
     active_documents: list = []
+
+# --- Strict Validation Model for Status Toggles ---
+class StatusUpdatePayload(BaseModel):
+    is_active: bool
 
 async def extract_user_context(request: Request):
     return {
@@ -68,16 +72,9 @@ async def upload_document(
     category: str = Form("General"),
     user_context: dict = Depends(extract_user_context)
 ):
-    """
-    Reads binary content, calculates a SHA-256 hash to prevent duplicate uploads,
-    chunks text, indexes into Qdrant with metadata, and records in PostgreSQL.
-    """
     contents = await file.read()
-    
-    # 1. Compute SHA-256 hash for document deduplication
     file_hash = hashlib.sha256(contents).hexdigest()
 
-    # 2. Check for existing duplicate upload in PostgreSQL
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -96,8 +93,7 @@ async def upload_document(
     except Exception as e:
         print(f"⚠️ DB duplicate check error: {e}")
 
-    # 3. Extract text from PDF
-    doc = fitz.open(stream=contents, filetype="pdf")
+    doc = pymupdf.open(stream=contents, filetype="pdf")
     extracted_text = "".join([page.get_text() for page in doc])
         
     text_splitter = RecursiveCharacterTextSplitter(
@@ -106,7 +102,6 @@ async def upload_document(
     )
     chunks = text_splitter.split_text(extracted_text)
     
-    # 4. Attach unique file_hash and initial is_active status to chunk metadata
     documents = [
         Document(
             page_content=chunk, 
@@ -122,7 +117,6 @@ async def upload_document(
     
     collection_name = "rag_documents"
 
-    # 5. Check if Qdrant collection exists; auto-create if missing
     if not qdrant_client.collection_exists(collection_name):
         sample_embedding = embeddings.embed_query("test dimension size")
         qdrant_client.create_collection(
@@ -133,7 +127,6 @@ async def upload_document(
             ),
         )
 
-    # 6. Save document vectors to Qdrant
     vector_store = QdrantVectorStore(
         client=qdrant_client,
         collection_name=collection_name, 
@@ -141,12 +134,12 @@ async def upload_document(
     )
     vector_store.add_documents(documents)
 
-    # 7. Record document entry in PostgreSQL
+    # Record document entry in PostgreSQL (Ignore PG's is_active field entirely)
     try:
         cur.execute(
             """
-            INSERT INTO documents (file_hash, filename, category, uploaded_by, is_active)
-            VALUES (%s, %s, %s, %s, TRUE);
+            INSERT INTO documents (file_hash, filename, category, uploaded_by)
+            VALUES (%s, %s, %s, %s);
             """,
             (file_hash, file.filename, category, user_context.get("role", "HR_Admin"))
         )
@@ -168,14 +161,15 @@ async def upload_document(
 @app.get("/api/documents")
 async def get_documents():
     """
-    Returns list of all uploaded documents and their current active status.
+    Fetches base document data from PostgreSQL, but strictly reads the TRUE is_active status 
+    live directly from Qdrant Vector metadata.
     """
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, file_hash, filename, category, uploaded_by, uploaded_at, is_active 
+            SELECT id, file_hash, filename, category, uploaded_by, uploaded_at 
             FROM documents 
             ORDER BY uploaded_at DESC;
             """
@@ -184,54 +178,101 @@ async def get_documents():
         cur.close()
         conn.close()
         
-        return [
-            {
+        documents_list = []
+        collection_name = "rag_documents"
+        collection_exists = qdrant_client.collection_exists(collection_name)
+
+        for r in rows:
+            file_hash = r[1]
+            is_active_in_qdrant = True 
+            
+            # Ask Qdrant as the sole source of truth for status
+            if collection_exists:
+                records, _ = qdrant_client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=Filter(
+                        must=[FieldCondition(key="metadata.file_hash", match=MatchValue(value=file_hash))]
+                    ),
+                    limit=1,
+                    with_payload=True
+                )
+                if records:
+                    is_active_in_qdrant = records[0].payload.get("metadata", {}).get("is_active", True)
+
+            documents_list.append({
                 "id": r[0],
                 "hash": r[1],
                 "name": r[2],
                 "category": r[3],
                 "uploaded_by": r[4],
                 "uploaded_at": r[5].isoformat() if r[5] else None,
-                "is_active": r[6]
-            }
-            for r in rows
-        ]
+                "is_active": is_active_in_qdrant # <-- Qdrant defines UI state
+            })
+            
+        return documents_list
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/api/documents/{file_hash}/status")
-async def update_document_status(file_hash: str, payload: dict):
+async def update_document_status(file_hash: str, payload: StatusUpdatePayload):
     """
-    Toggles document active status in PostgreSQL and synchronizes Qdrant vector payload.
+    Qdrant ONLY toggle: This endpoint no longer touches PostgreSQL. 
+    It strictly updates the active state in Qdrant's vector metadata.
     """
-    new_status = payload.get("is_active", True)
+    new_status = payload.is_active
     
-    # 1. Update status in PostgreSQL
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE documents SET is_active = %s WHERE file_hash = %s;", (new_status, file_hash))
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"⚠️ Postgres status update error: {e}")
+        collection_name = "rag_documents"
+        if not qdrant_client.collection_exists(collection_name):
+            raise HTTPException(status_code=404, detail="Qdrant collection not found.")
 
-    # 2. Update status in Qdrant metadata payload using file_hash filter
-    try:
-        qdrant_client.set_payload(
-            collection_name="rag_documents",
-            payload={"metadata": {"is_active": new_status}},
-            points=Filter(
-                must=[
-                    FieldCondition(
-                        key="metadata.file_hash",
-                        match=MatchValue(value=file_hash)
-                    )
-                ]
+        next_offset = None
+        chunks_found = False
+        
+        while True:
+            records, next_offset = qdrant_client.scroll(
+                collection_name=collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="metadata.file_hash",
+                            match=MatchValue(value=file_hash)
+                        )
+                    ]
+                ),
+                limit=1000,
+                offset=next_offset,
+                with_payload=True
             )
-        )
+
+            if records:
+                chunks_found = True
+
+            for record in records:
+                updated_payload = record.payload or {}
+                if "metadata" not in updated_payload:
+                    updated_payload["metadata"] = {}
+                
+                updated_payload["metadata"]["is_active"] = new_status
+                
+                qdrant_client.set_payload(
+                    collection_name=collection_name,
+                    payload=updated_payload,
+                    points=[record.id]
+                )
+                
+            if next_offset is None:
+                break
+                
+        # If Qdrant has zero chunks matching this hash, reject the request
+        if not chunks_found:
+             raise HTTPException(status_code=404, detail="Document hash not found in Qdrant.")
+                
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"⚠️ Qdrant payload update error: {e}")
+        raise HTTPException(status_code=500, detail="Vector database sync failed.")
 
-    return {"file_hash": file_hash, "is_active": new_status, "status": "updated"}
+    return {"file_hash": file_hash, "is_active": new_status, "status": "updated in Qdrant"}

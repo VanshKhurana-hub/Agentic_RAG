@@ -5,8 +5,6 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-from app.database.postgres import get_db_connection
-
 # Shared local Qdrant client
 qdrant_client = QdrantClient(path="qdrant_local_db")
 
@@ -23,13 +21,17 @@ def search_policy_documents(query: str) -> str:
     Use this when the user asks about company rules, benefits, or policies.
     """
     try:
+        # Check if collection exists first to prevent errors on an empty Qdrant instance
+        if not qdrant_client.collection_exists("rag_documents"):
+            return "I could not find any relevant information in the currently active documents."
+
         vector_store = QdrantVectorStore(  
             client=qdrant_client, 
             collection_name="rag_documents", 
             embedding=embeddings           
         )
 
-        # Qdrant native vector filter: retrieve only vectors where is_active == True
+        # Qdrant native vector filter: retrieve only vectors where metadata.is_active == True
         active_filter = Filter(
             must=[
                 FieldCondition(
@@ -38,10 +40,14 @@ def search_policy_documents(query: str) -> str:
                 )
             ]
         )
+        print(f"\n--- DEBUG: Starting Vector Search ---")
+        print(f"DEBUG: Query = {query}")
 
         # Perform similarity search filtering out inactive documents
         results = vector_store.similarity_search(query, k=3, filter=active_filter)
+
         
+        print(f"DEBUG: Found {len(results)} matching chunks.")
         if not results:
             return "I could not find any relevant information in the currently active documents."
             

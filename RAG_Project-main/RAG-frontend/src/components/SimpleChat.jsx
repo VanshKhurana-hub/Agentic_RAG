@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { 
   Send, Plus, MessageSquare, User, Zap, Bot, Loader2, 
   UploadCloud, FileText, Database, ShieldCheck, CheckSquare, Square,
@@ -590,7 +590,10 @@ export default function ChatInterface() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to update status on server');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `Failed to update status on server (HTTP ${response.status})`
+        );
       }
     } catch (error) {
       console.error("⚠️ Server status update failed, reverting UI:", error);

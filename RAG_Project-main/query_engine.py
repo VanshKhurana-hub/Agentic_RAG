@@ -1,6 +1,6 @@
 import os
 from typing import TypedDict, Annotated, Sequence
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_aws import ChatBedrock
@@ -49,16 +49,75 @@ def call_model(state: AgentState):
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
-# 8. Construct the Graph
+# 8. Define the CRAG Evaluator Node
+def crag_evaluator(state: AgentState):
+    """
+    Evaluates the retrieved document chunks. If irrelevant, rewrites the query 
+    and forces the agent to try searching one more time.
+    """
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # Only evaluate if the last action was a document search
+    if getattr(last_message, "type", "") == "tool" and getattr(last_message, "name", "") == "search_policy_documents":
+        
+        # Find the original question and count recent searches to prevent infinite loops
+        current_human_msg = ""
+        messages_since_human = 0
+        for m in reversed(messages):
+            if m.type == "human":
+                current_human_msg = m.content
+                break
+            messages_since_human += 1
+            
+        recent_searches = sum(1 for m in messages[-messages_since_human:] if getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "search_policy_documents")
+        
+        if recent_searches > 1:
+            print("--- ⚠️ CRAG: Max search retries reached. Yielding to Agent. ---")
+            return {"messages": []}
+
+        # Skip evaluation if the database was already explicitly empty
+        if "I could not find" in last_message.content:
+            return {"messages": []}
+
+        print("\n--- 🔍 CRAG: Evaluating retrieved chunks... ---")
+        
+        # GRADE THE CONTEXT
+        grader_prompt = f"User Question: '{current_human_msg}'\n\nRetrieved Context:\n{last_message.content}\n\nDoes the context contain relevant information to answer the user's question? Reply strictly with 'YES' or 'NO'."
+        grader_eval = llm.invoke(grader_prompt).content.strip().upper()
+        
+        if "NO" in grader_eval:
+            print("--- ❌ CRAG: Context irrelevant. Triggering query rewrite... ---")
+            
+            # REWRITE THE QUERY
+            rewrite_prompt = f"The user originally asked: '{current_human_msg}'. The previous database search found irrelevant results. Rewrite the search query using better, alternative keywords to find the right HR policy document. Return ONLY the new search query."
+            new_query = llm.invoke(rewrite_prompt).content.strip()
+            print(f"--- 🔄 CRAG: New Query -> {new_query} ---")
+            
+            # Append a hidden human message to force the agent to try the new query
+            retry_message = HumanMessage(
+                content=f"[SYSTEM: The previous search failed to find relevant data. Call the 'search_policy_documents' tool again using EXACTLY this improved query: {new_query}]"
+            )
+            return {"messages": [retry_message]}
+        else:
+            print("--- ✅ CRAG: Context is relevant. Proceeding to answer. ---")
+            
+    return {"messages": []}
+
+# 9. Construct the Graph with CRAG
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", ToolNode(tools))
+workflow.add_node("crag_evaluator", crag_evaluator) # Inject CRAG Node
 
 workflow.set_entry_point("agent")
 workflow.add_conditional_edges("agent", tools_condition)
-workflow.add_edge("tools", "agent")
+# Route tools to CRAG instead of back to the agent immediately
+workflow.add_edge("tools", "crag_evaluator") 
+# CRAG loops back to agent (with a rewritten query if it failed)
+workflow.add_edge("crag_evaluator", "agent") 
 
-# 9. Setup PostgreSQL Connection Pool & Checkpointer
+# 10. Setup PostgreSQL Connection Pool & Checkpointer
 DB_URI = os.getenv(
     "DATABASE_URL", 
     "postgresql://postgres:password@localhost:5432/AGEtic_RAG"

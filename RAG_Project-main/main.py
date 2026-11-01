@@ -184,7 +184,7 @@ async def get_documents():
 
         for r in rows:
             file_hash = r[1]
-            is_active_in_qdrant = True 
+            is_active_in_qdrant = False
             
             # Ask Qdrant as the sole source of truth for status
             if collection_exists:
@@ -197,7 +197,9 @@ async def get_documents():
                     with_payload=True
                 )
                 if records:
-                    is_active_in_qdrant = records[0].payload.get("metadata", {}).get("is_active", True)
+                    payload = records[0].payload or {}
+                    metadata = payload.get("metadata") or {}
+                    is_active_in_qdrant = bool(metadata.get("is_active", False))
 
             documents_list.append({
                 "id": r[0],
@@ -227,47 +229,32 @@ async def update_document_status(file_hash: str, payload: StatusUpdatePayload):
         if not qdrant_client.collection_exists(collection_name):
             raise HTTPException(status_code=404, detail="Qdrant collection not found.")
 
-        next_offset = None
-        chunks_found = False
-        
-        while True:
-            records, next_offset = qdrant_client.scroll(
-                collection_name=collection_name,
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="metadata.file_hash",
-                            match=MatchValue(value=file_hash)
-                        )
-                    ]
-                ),
-                limit=1000,
-                offset=next_offset,
-                with_payload=True
-            )
-
-            if records:
-                chunks_found = True
-
-            for record in records:
-                updated_payload = record.payload or {}
-                if "metadata" not in updated_payload:
-                    updated_payload["metadata"] = {}
-                
-                updated_payload["metadata"]["is_active"] = new_status
-                
-                qdrant_client.set_payload(
-                    collection_name=collection_name,
-                    payload=updated_payload,
-                    points=[record.id]
+        document_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="metadata.file_hash",
+                    match=MatchValue(value=file_hash)
                 )
-                
-            if next_offset is None:
-                break
-                
-        # If Qdrant has zero chunks matching this hash, reject the request
-        if not chunks_found:
-             raise HTTPException(status_code=404, detail="Document hash not found in Qdrant.")
+            ]
+        )
+
+        # Check that the hash exists before applying the update. The filtered
+        # mutation itself updates every matching chunk, regardless of count.
+        records, _ = qdrant_client.scroll(
+            collection_name=collection_name,
+            scroll_filter=document_filter,
+            limit=1,
+            with_payload=False
+        )
+        if not records:
+            raise HTTPException(status_code=404, detail="Document hash not found in Qdrant.")
+
+        qdrant_client.set_payload(
+            collection_name=collection_name,
+            payload={"is_active": new_status},
+            points=document_filter,
+            key="metadata"
+        )
                 
     except HTTPException:
         raise
